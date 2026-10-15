@@ -25,7 +25,7 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const PREFIX = ';';
 
 if (!TOKEN) {
-console.error('ไม่พบ DISCORD_TOKEN ในไฟล์ .env');
+console.error('❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env');
 process.exit(1);
 }
 
@@ -38,10 +38,12 @@ GatewayIntentBits.GuildVoiceStates
 ]
 });
 
-const states = new Map();
+const guildStates = new Map();
 
 function getState(guildId) {
-if (states.has(guildId)) return states.get(guildId);
+if (guildStates.has(guildId)) {
+return guildStates.get(guildId);
+}
 
 const player = createAudioPlayer({
 behaviors: {
@@ -72,7 +74,7 @@ state.current = null;
 
 if (state.textChannel) {
   state.textChannel.send(
-    '⚠️ เล่นเพลงนี้ไม่สำเร็จ กำลังข้ามเพลง'
+    '⚠️ เล่นเพลงไม่สำเร็จ กำลังข้ามไปเพลงถัดไป'
   ).catch(() => {});
 }
 
@@ -80,11 +82,11 @@ void playNext(guildId);
 
 });
 
-states.set(guildId, state);
+guildStates.set(guildId, state);
 return state;
 }
 
-function controlButtons() {
+function makeButtons() {
 return new ActionRowBuilder().addComponents(
 new ButtonBuilder()
 .setCustomId('music:pause')
@@ -113,17 +115,42 @@ new ButtonBuilder()
 );
 }
 
+async function searchTrack(query, requesterId) {
+const results = await play.search(query, {
+limit: 1,
+source: {
+youtube: 'video'
+}
+});
+
+if (!results || results.length === 0) {
+return null;
+}
+
+const result = results[0];
+
+return {
+title: result.title || 'ไม่ทราบชื่อเพลง',
+url: result.url,
+thumbnail: result.thumbnails?.[0]?.url || null,
+requesterId
+};
+}
+
 async function playNext(guildId) {
-const state = states.get(guildId);
+const state = guildStates.get(guildId);
 
 if (
 !state ||
 state.playing ||
-!state.queue.length ||
+state.queue.length === 0 ||
 !state.connection
-) return;
+) {
+return;
+}
 
 const track = state.queue.shift();
+
 state.current = track;
 state.playing = true;
 
@@ -168,18 +195,19 @@ if (track.thumbnail) {
 if (state.textChannel) {
   await state.textChannel.send({
     embeds: [embed],
-    components: [controlButtons()]
+    components: [makeButtons()]
   }).catch(() => {});
 }
 
 } catch (error) {
-console.error('Playback failed:', error.message);
+console.error('Playback error:', error.message);
+
 state.playing = false;
 state.current = null;
 
 if (state.textChannel) {
   await state.textChannel.send(
-    '❌ เปิดเพลงไม่สำเร็จ ลองค้นหาเพลงอื่น'
+    '❌ เปิดเพลงไม่ได้ ลองค้นหาเพลงอื่น'
   ).catch(() => {});
 }
 
@@ -188,92 +216,89 @@ void playNext(guildId);
 }
 }
 
-async function searchTrack(query, requesterId) {
-const results = await play.search(query, {
-limit: 1,
-source: { youtube: 'video' }
-});
-
-if (!results || !results.length) return null;
-
-const result = results[0];
-
-return {
-title: result.title || 'ไม่ทราบชื่อเพลง',
-url: result.url,
-thumbnail: result.thumbnails?.[0]?.url || null,
-requesterId
-};
-}
-
 client.once('ready', () => {
-console.log("บอทออนไลน์: ${client.user.tag}");
+console.log("✅ Bot online: ${client.user.tag}");
 console.log("Prefix: ${PREFIX}");
 });
 
 client.on('messageCreate', async message => {
 if (
-!message.guild ||
 message.author.bot ||
+!message.guild ||
 !message.content.startsWith(PREFIX)
-) return;
+) {
+return;
+}
 
-const raw = message.content.slice(PREFIX.length).trim();
-const separator = raw.indexOf(' ');
+const input = message.content.slice(PREFIX.length).trim();
+
+if (!input) return;
+
+const spaceIndex = input.indexOf(' ');
 
 const command = (
-separator === -1 ? raw : raw.slice(0, separator)
+spaceIndex === -1
+? input
+: input.slice(0, spaceIndex)
 ).toLowerCase();
 
-const argument = separator === -1
+const args = spaceIndex === -1
 ? ''
-: raw.slice(separator + 1).trim();
+: input.slice(spaceIndex + 1).trim();
 
 const state = getState(message.guild.id);
 
-if (command === 'ping') {
-return message.reply('🏓 Pong! บอททำงานอยู่');
-}
-
+// HELP
 if (command === 'help') {
 return message.reply([
-'🎵 คำสั่ง Music Bot',
-'";play ชื่อเพลง" — ค้นหาเพลง',
-'";queue" — ดูคิว',
+'🎵 Discord Music Bot',
+'',
+'";play ชื่อเพลง" — ค้นหาเพลงและเพิ่มเข้าคิว',
+'";queue" — ดูคิวเพลง',
 '";skip" — ข้ามเพลง',
 '";pause" — พักเพลง',
-'";resume" — เล่นต่อ',
-'";stop" — หยุดและล้างคิว',
+'";resume" — เล่นเพลงต่อ',
+'";stop" — หยุดเพลงและล้างคิว',
 '";ping" — ทดสอบบอท',
-'";help" — ดูคำสั่ง'
+'";help" — แสดงคำสั่งทั้งหมด',
+'',
+'ตัวอย่าง: ";play Numb Linkin Park"'
 ].join('\n'));
 }
 
+// PING
+if (command === 'ping') {
+return message.reply('🏓 Pong! บอทออนไลน์และตอบสนองแล้ว');
+}
+
+// PLAY / SEARCH
 if (command === 'play') {
-if (!argument) {
+if (!args) {
 return message.reply(
-'ตัวอย่าง: ";play Numb Linkin Park"'
+'❗ ใส่ชื่อเพลงด้วย เช่น ";play Numb Linkin Park"'
 );
 }
 
 const voiceChannel = message.member?.voice?.channel;
 
 if (!voiceChannel) {
-  return message.reply('เข้าห้องเสียงก่อนนะ');
+  return message.reply(
+    '🔊 เข้าห้องเสียง Discord ก่อนใช้คำสั่งเล่นเพลง'
+  );
+}
+
+if (
+  state.connection &&
+  state.connection.joinConfig.channelId !== voiceChannel.id
+) {
+  return message.reply(
+    'บอทอยู่ในห้องเสียงอื่น ให้ใช้ `;stop` ก่อน'
+  );
 }
 
 await message.channel.sendTyping().catch(() => {});
 
 try {
-  if (
-    state.connection &&
-    state.connection.joinConfig.channelId !== voiceChannel.id
-  ) {
-    return message.reply(
-      'บอทอยู่ในห้องเสียงอื่น ใช้ `;stop` ก่อน'
-    );
-  }
-
   if (!state.connection) {
     state.connection = joinVoiceChannel({
       channelId: voiceChannel.id,
@@ -293,34 +318,37 @@ try {
 
   state.textChannel = message.channel;
 
-  await message.reply(`🔎 กำลังค้นหา: **${argument}**`);
+  await message.reply(`🔎 กำลังค้นหาเพลง: **${args}**`);
 
   const track = await searchTrack(
-    argument,
+    args,
     message.author.id
   );
 
   if (!track) {
-    return message.channel.send('ไม่พบเพลง ลองค้นหาใหม่');
+    return message.channel.send('ไม่พบเพลง ลองชื่อเพลงอื่น');
   }
 
   state.queue.push(track);
 
   await message.channel.send(
-    `✅ เพิ่มเข้าคิว: **${track.title}**`
+    `✅ เพิ่มเข้าคิวแล้ว: **${track.title}**`
   );
 
   void playNext(message.guild.id);
 } catch (error) {
-  console.error(error);
+  console.error('Play command error:', error);
 
   return message.reply(
-    '❌ เกิดข้อผิดพลาด ตรวจสิทธิ์บอทแล้วลองใหม่'
+    '❌ ค้นหาหรือเชื่อมต่อห้องเสียงไม่สำเร็จ ตรวจสิทธิ์บอทแล้วลองใหม่'
   );
 }
 
+return;
+
 }
 
+// QUEUE
 if (command === 'queue') {
 const lines = [];
 
@@ -333,11 +361,14 @@ state.queue.slice(0, 15).forEach((track, index) => {
 });
 
 return message.reply(
-  lines.length ? lines.join('\n').slice(0, 1900) : 'คิวว่างอยู่'
+  lines.length
+    ? lines.join('\n').slice(0, 1900)
+    : '📭 ตอนนี้คิวเพลงว่าง'
 );
 
 }
 
+// SKIP
 if (command === 'skip') {
 if (!state.current) {
 return message.reply('ไม่มีเพลงที่กำลังเล่น');
@@ -348,44 +379,56 @@ return message.reply('⏭️ ข้ามเพลงแล้ว');
 
 }
 
+// PAUSE
 if (command === 'pause') {
+const success = state.player.pause();
+
 return message.reply(
-state.player.pause() ? '⏸️ พักเพลงแล้ว' : 'ไม่มีเพลงให้พัก'
+  success ? '⏸️ พักเพลงแล้ว' : 'ไม่มีเพลงที่พักได้'
 );
+
 }
 
+// RESUME
 if (command === 'resume') {
+const success = state.player.unpause();
+
 return message.reply(
-state.player.unpause() ? '▶️ เล่นต่อแล้ว' : 'ไม่มีเพลงให้เล่นต่อ'
+  success ? '▶️ เล่นเพลงต่อแล้ว' : 'ไม่มีเพลงที่เล่นต่อได้'
 );
+
 }
 
+// STOP
 if (command === 'stop') {
 state.queue = [];
 state.generation++;
+
 state.player.stop(true);
 state.playing = false;
 state.current = null;
 
 if (state.connection) {
   state.connection.destroy();
+  state.connection = null;
 }
 
-state.connection = null;
-
-return message.reply('⏹️ หยุดเพลงและล้างคิวแล้ว');
+return message.reply('⏹️ หยุดเพลง ล้างคิว และออกจากห้องเสียงแล้ว');
 
 }
 });
 
+// BUTTON CONTROLS
 client.on('interactionCreate', async interaction => {
 if (
 !interaction.isButton() ||
 !interaction.customId.startsWith('music:')
-) return;
+) {
+return;
+}
 
 const state = interaction.guildId
-? states.get(interaction.guildId)
+? guildStates.get(interaction.guildId)
 : null;
 
 if (!state) {
@@ -409,7 +452,7 @@ ephemeral: true
 if (action === 'resume') {
 return interaction.reply({
 content: state.player.unpause()
-? '▶️ เล่นต่อแล้ว'
+? '▶️ เล่นเพลงต่อแล้ว'
 : 'ไม่มีเพลงให้เล่นต่อ',
 ephemeral: true
 });
@@ -435,15 +478,15 @@ return interaction.reply({
 if (action === 'stop') {
 state.queue = [];
 state.generation++;
+
 state.player.stop(true);
 state.playing = false;
 state.current = null;
 
 if (state.connection) {
   state.connection.destroy();
+  state.connection = null;
 }
-
-state.connection = null;
 
 return interaction.reply({
   content: '⏹️ หยุดเพลงและล้างคิวแล้ว',
@@ -454,7 +497,7 @@ return interaction.reply({
 });
 
 client.on('error', error => {
-console.error('Discord error:', error);
+console.error('Discord client error:', error);
 });
 
 client.login(TOKEN);
